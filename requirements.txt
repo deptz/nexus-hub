@@ -1,0 +1,58 @@
+# Core web framework
+fastapi==0.121.2
+uvicorn[standard]==0.38.0
+pydantic==2.12.4
+
+# Database
+sqlalchemy==2.0.44
+psycopg2-binary==2.9.11
+alembic==1.17.2
+pgvector==0.4.1
+
+# Configuration
+python-dotenv==1.2.1
+
+# LLM APIs
+openai==2.8.0  # v2 has some API changes but AsyncOpenAI is compatible
+google-generativeai==0.8.5  # Legacy SDK (still used for some operations)
+google-genai==0.2.2  # New SDK for File Search Store API
+
+# RAG & Embeddings
+sentence-transformers==5.1.2
+numpy==2.3.4
+
+# Testing
+pytest==9.0.1
+pytest-asyncio==1.3.0
+httpx==0.28.1
+requests==2.32.3  # For setup scripts and utilities (optional, not required for Gemini File Search)
+
+# Token counting for history truncation
+tiktoken==0.12.0
+
+# MCP client dependencies
+httpx==0.28.1  # Already included, but needed for MCP HTTP
+websockets==15.0.1  # For MCP WebSocket support (major update: 14.1 → 15.0.1)
+
+# Redis for rate limiting and message queue
+redis==7.0.1  # Major update: 5.2.0 → 7.0.1 (check connection usage)
+rq==2.6.0  # Major update: 1.16.1 → 2.6.0 (check job handling API)
+
+# Prometheus metrics
+prometheus-client==0.23.1
+
+# Structured logging
+python-json-logger==4.0.0  # Major update: 3.2.1 → 4.0.0 (check API changes)
+
+# Secrets management (vault support)
+hvac==2.4.0  # Major update: 1.2.1 → 2.4.0 (check Vault client API)
+boto3==1.40.74  # AWS Secrets Manager support
+
+# Circuit breaker
+pybreaker==1.4.1
+
+# API key hashing
+bcrypt==4.2.0
+
+# CORS support (built into FastAPI but may need explicit config)
+
