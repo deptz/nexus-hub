@@ -1,17 +1,19 @@
 """Alembic environment configuration."""
 
-from logging.config import fileconfig
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-from alembic import context
 import os
 import sys
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Import app config
-from app.infra.config import config
+# Import logging.config BEFORE importing app.infra.config to avoid naming conflicts
+from logging.config import fileConfig
+from sqlalchemy import engine_from_config
+from sqlalchemy import pool
+from alembic import context
+
+# Import app config (note: this is app.infra.config, not logging.config)
+from app.infra.config import config as app_config
 from app.infra.database import engine
 
 # this is the Alembic Config object, which provides
@@ -21,10 +23,10 @@ config_obj = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config_obj.config_file_name is not None:
-    fileconfig(config_obj.config_file_name)
+    fileConfig(config_obj.config_file_name)
 
 # Set SQLAlchemy URL from app config
-config_obj.set_main_option("sqlalchemy.url", config.DATABASE_URL)
+config_obj.set_main_option("sqlalchemy.url", app_config.DATABASE_URL)
 
 # add your model's MetaData object here
 # for 'autogenerate' support

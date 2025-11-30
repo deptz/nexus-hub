@@ -15,4 +15,8 @@ class TenantContext:
     mcp_configs: Dict[str, Any]  # server_id -> config
     prompt_profile: Dict[str, Any]  # tenant prompt & language prefs
     isolation_mode: str  # "shared_db" | "dedicated_db"
+    max_tool_steps: int = 10  # Maximum tool execution steps
+    planning_enabled: bool = True  # Whether planning is enabled
+    plan_timeout_seconds: int = 300  # Plan execution timeout
+
 

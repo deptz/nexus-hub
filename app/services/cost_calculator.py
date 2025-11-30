@@ -85,3 +85,30 @@ def calculate_tool_cost(
     # Add pricing for specific tools if needed
     return 0.0
 
+
+def calculate_planning_cost(
+    provider: str,
+    model: str,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+) -> float:
+    """
+    Calculate cost for planning LLM call.
+    
+    Planning typically uses cheaper/faster models (e.g., gpt-4o-mini).
+    This is a wrapper around calculate_llm_cost for clarity.
+    
+    Args:
+        provider: 'openai' or 'gemini'
+        model: Model name used for planning
+        prompt_tokens: Input tokens
+        completion_tokens: Output tokens
+        total_tokens: Total tokens (if prompt/completion not available)
+    
+    Returns:
+        Cost in USD
+    """
+    return calculate_llm_cost(provider, model, prompt_tokens, completion_tokens, total_tokens)
+
+

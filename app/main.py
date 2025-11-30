@@ -119,6 +119,14 @@ app = FastAPI(
             "description": "Manage MCP (Model Context Protocol) servers and tools",
         },
         {
+            "name": "Plans",
+            "description": "Agentic planning endpoints for creating, viewing, and refining multi-step execution plans",
+        },
+        {
+            "name": "Tasks",
+            "description": "Agentic task management endpoints for long-running operations, state persistence, and task resumption",
+        },
+        {
             "name": "Health",
             "description": "Health check and monitoring endpoints",
         },
@@ -148,6 +156,8 @@ from app.api.routers import (
     mcp_servers,
     channels,
     rag_documents,
+    tasks,
+    plans,
 )
 
 # Register routers
@@ -163,6 +173,8 @@ app.include_router(knowledge_bases.router)
 app.include_router(mcp_servers.router)
 app.include_router(channels.router)
 app.include_router(rag_documents.router)
+app.include_router(tasks.router)
+app.include_router(plans.router)
 
 # Configure OpenAPI security schemes
 def custom_openapi():

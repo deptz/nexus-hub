@@ -23,7 +23,10 @@ def get_tenant_context(tenant_id: str) -> TenantContext:
         # Load tenant base settings
         tenant_row = session.execute(
             text("""
-                SELECT id, llm_provider, llm_model, isolation_mode
+                SELECT id, llm_provider, llm_model, isolation_mode,
+                       COALESCE(max_tool_steps, 10) as max_tool_steps,
+                       COALESCE(planning_enabled, TRUE) as planning_enabled,
+                       COALESCE(plan_timeout_seconds, 300) as plan_timeout_seconds
                 FROM tenants
                 WHERE id = :tenant_id
             """),
@@ -36,6 +39,9 @@ def get_tenant_context(tenant_id: str) -> TenantContext:
         llm_provider = tenant_row.llm_provider
         llm_model = tenant_row.llm_model
         isolation_mode = tenant_row.isolation_mode
+        max_tool_steps = tenant_row.max_tool_steps
+        planning_enabled = tenant_row.planning_enabled
+        plan_timeout_seconds = tenant_row.plan_timeout_seconds
         
         # Load tenant prompt profile
         prompt_row = session.execute(
@@ -114,5 +120,9 @@ def get_tenant_context(tenant_id: str) -> TenantContext:
             mcp_configs=mcp_configs,
             prompt_profile=prompt_profile,
             isolation_mode=isolation_mode,
+            max_tool_steps=max_tool_steps,
+            planning_enabled=planning_enabled,
+            plan_timeout_seconds=plan_timeout_seconds,
         )
+
 
