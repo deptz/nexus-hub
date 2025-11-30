@@ -926,10 +926,10 @@ The system will automatically attach the corpus to the GenerativeModel, enabling
 
 7. **Read full documentation**:
    - `README.md` - Overview
-   - `docs/guides/QUICK_REFERENCE.md` - Quick command reference
-   - `docs/guides/LOCAL_DEVELOPMENT.md` - Detailed dev guide
+   - `docs/README.md` - Complete documentation index
    - `docs/guides/TELEGRAM_SETUP.md` - Telegram adapter setup
-   - `docs/audit/PRODUCTION_READINESS.md` - Production checklist
+   - `docs/technical/SYSTEM_ARCHITECTURE.md` - System architecture
+   - `docs/technical/AGENTIC_MESSAGE_FLOW.md` - Agentic AI flow
 
 ## 📚 Additional Resources
 

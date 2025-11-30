@@ -166,7 +166,7 @@ For feature requests, please include:
 
 If you have questions about contributing, please:
 - Open an issue with the `question` label
-- Check existing documentation in `docs/guides/`
+- Check existing documentation in `docs/` (see [docs/README.md](docs/README.md) for full index)
 - Review the README.md for setup instructions
 
 Thank you for contributing to Nexus Hub!
