@@ -80,6 +80,37 @@ circuit_breaker_state = Gauge(
     ["service"],
 )
 
+# Agentic planning metrics
+plans_created_total = Counter(
+    "plans_created_total",
+    "Total agentic plans created",
+    ["tenant_id", "status"],
+)
+
+plan_execution_duration = Histogram(
+    "plan_execution_duration_seconds",
+    "Plan execution duration in seconds",
+    ["tenant_id"],
+)
+
+plan_steps_completed = Counter(
+    "plan_steps_completed_total",
+    "Total plan steps completed",
+    ["tenant_id", "step_type"],
+)
+
+tasks_created_total = Counter(
+    "tasks_created_total",
+    "Total agentic tasks created",
+    ["tenant_id", "status"],
+)
+
+tasks_resumed_total = Counter(
+    "tasks_resumed_total",
+    "Total agentic tasks resumed",
+    ["tenant_id"],
+)
+
 
 def get_metrics_response() -> Response:
     """Get Prometheus metrics as HTTP response."""
@@ -87,4 +118,5 @@ def get_metrics_response() -> Response:
         content=generate_latest(),
         media_type=CONTENT_TYPE_LATEST,
     )
+
 

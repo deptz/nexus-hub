@@ -1,7 +1,7 @@
 """Canonical tool definition model."""
 
 from pydantic import BaseModel, Field
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 
 class ToolDefinition(BaseModel):
@@ -17,4 +17,13 @@ class ToolDefinition(BaseModel):
         ...,
         description="Provider-specific config: e.g. {'vector_store_id': '...'} or {'mcp_server_id': '...', 'mcp_tool_name': '...'}"
     )
+    is_user_scoped: bool = Field(
+        default=False,
+        description="If True, this tool requires user context validation and parameter override"
+    )
+    user_context_params: List[str] = Field(
+        default_factory=list,
+        description="Parameter names that must be overridden with user context (e.g., ['customer_id', 'user_id'])"
+    )
+
 

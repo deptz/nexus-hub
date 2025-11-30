@@ -131,6 +131,23 @@ async def create_mcp_server(
     )
     db.commit()
     
+    # Audit logging: Log MCP server creation
+    try:
+        from app.logging.event_logger import log_event
+        await log_event(
+            tenant_id=tenant_id,
+            event_type="mcp_server_created",
+            provider="mcp",
+            status="success",
+            payload={
+                "server_id": str(server_id),
+                "server_name": request.name,
+                "endpoint": request.endpoint,  # Endpoint is safe to log (already validated)
+            }
+        )
+    except Exception:
+        pass  # Don't fail creation if logging fails
+    
     # Fetch created server
     row = db.execute(
         text("""
@@ -363,6 +380,22 @@ async def update_mcp_server(
     )
     db.commit()
     
+    # Audit logging: Log MCP server update
+    try:
+        from app.logging.event_logger import log_event
+        await log_event(
+            tenant_id=tenant_id,
+            event_type="mcp_server_updated",
+            provider="mcp",
+            status="success",
+            payload={
+                "server_id": server_id,
+                "updated_fields": [k for k in ["endpoint", "auth_config", "is_active"] if getattr(request, k, None) is not None],
+            }
+        )
+    except Exception:
+        pass  # Don't fail update if logging fails
+    
     # Fetch updated server
     row = db.execute(
         text("""
@@ -410,6 +443,18 @@ async def delete_mcp_server(
     db.execute(text("SET app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
     db.commit()
     
+    # Get server name before deletion for audit log
+    server_row = db.execute(
+        text("""
+            SELECT name FROM mcp_servers
+            WHERE id = :server_id AND tenant_id = :tenant_id
+        """),
+        {"server_id": server_id, "tenant_id": tenant_id}
+    ).fetchone()
+    
+    if not server_row:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    
     result = db.execute(
         text("""
             DELETE FROM mcp_servers
@@ -419,8 +464,21 @@ async def delete_mcp_server(
     )
     db.commit()
     
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="MCP server not found")
+    # Audit logging: Log MCP server deletion
+    try:
+        from app.logging.event_logger import log_event
+        await log_event(
+            tenant_id=tenant_id,
+            event_type="mcp_server_deleted",
+            provider="mcp",
+            status="success",
+            payload={
+                "server_id": server_id,
+                "server_name": server_row.name,
+            }
+        )
+    except Exception:
+        pass  # Don't fail deletion if logging fails
     
     return {
         "status": "deleted",
@@ -553,7 +611,7 @@ async def create_mcp_server_tool(
             {
                 "id": existing.id,
                 "description": request.description,
-                "schema": json.dumps(request.schema),
+                "schema": json.dumps(request.json_schema),
             }
         )
         tool_id = existing.id
@@ -573,7 +631,7 @@ async def create_mcp_server_tool(
                 "server_id": server_id,
                 "tool_name": request.tool_name,
                 "description": request.description,
-                "schema": json.dumps(request.schema),
+                "schema": json.dumps(request.json_schema),
             }
         )
     
@@ -594,7 +652,7 @@ async def create_mcp_server_tool(
         mcp_server_id=str(row.mcp_server_id),
         tool_name=row.tool_name,
         description=row.description,
-        schema=row.schema,
+        json_schema=row.schema,  # Use json_schema internally, but API will show as "schema"
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )

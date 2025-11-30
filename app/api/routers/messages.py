@@ -72,7 +72,8 @@ async def handle_inbound_message(
         }
     
     # Synchronous processing
-    result = await handle_inbound_message_sync(message, db)
+    # Pass api_tenant_id to ensure tenant context comes from authentication, not message
+    result = await handle_inbound_message_sync(message, db, api_tenant_id=api_tenant_id)
     return InboundMessageResponse(**result)
 
 

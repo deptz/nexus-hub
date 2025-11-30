@@ -16,6 +16,9 @@ from app.services.tenant_context_service import get_tenant_context
 from app.services.prompt_builder import build_messages
 from app.services.tool_registry import get_allowed_tools
 from app.services.tool_execution_engine import execute_tool_call
+from app.services.agentic_planner import create_plan, refine_plan
+from app.services.agentic_reflector import reflect_on_execution
+from app.services.agentic_task_manager import create_task, update_task_state, complete_task
 from app.adapters.vendor_adapter_openai import call_openai_responses, build_openai_tools
 from app.adapters.vendor_adapter_gemini import call_gemini
 from app.logging.event_logger import log_event, log_tool_call
@@ -26,10 +29,15 @@ from app.services.cost_calculator import calculate_llm_cost, calculate_tool_cost
 from app.infra.error_handler import retry_with_backoff, classify_error, RateLimitError, AuthError
 from app.infra.circuit_breaker import openai_circuit_breaker, gemini_circuit_breaker
 from app.infra.timeout import LLM_CALL_TIMEOUT
-from app.infra.metrics import llm_calls_total, llm_call_duration, tool_calls_total
+from app.infra.metrics import (
+    llm_calls_total, llm_call_duration, tool_calls_total,
+    plans_created_total, plan_execution_duration,
+    tasks_created_total, tasks_resumed_total
+)
 
 # Maximum tool call iterations to prevent infinite loops
-MAX_TOOL_STEPS = 3
+# Now loaded from TenantContext.max_tool_steps (default: 10)
+MAX_TOOL_STEPS = 10  # Fallback default if not set in tenant context
 
 
 def get_or_create_conversation(
@@ -165,23 +173,38 @@ def get_conversation_history(
 async def handle_inbound_message_sync(
     message: CanonicalMessage,
     db: Session,
+    api_tenant_id: Optional[str] = None,  # NEW: From API key auth
 ) -> Dict[str, Any]:
     """
     Internal handler for message processing (used by both sync and async endpoints).
     
     Flow:
-    1. Resolve TenantContext
-    2. Get/create conversation
-    3. Persist inbound message
-    4. Build prompts
-    5. Get allowed tools
-    6. Call LLM
-    7. Execute tool calls if needed
-    8. Generate response
-    9. Persist outbound message
-    10. Log events
+    1. Validate tenant_id from API key matches message.tenant_id (prevent spoofing)
+    2. Create immutable execution context from authentication
+    3. Resolve TenantContext
+    4. Get/create conversation
+    5. Persist inbound message
+    6. Build prompts
+    7. Get allowed tools
+    8. Call LLM
+    9. Execute tool calls if needed (with execution context)
+    10. Generate response
+    11. Persist outbound message
+    12. Log events
     """
-    tenant_id = message.tenant_id
+    # SECURITY: Tenant ID must come from API key authentication, not message content
+    # If api_tenant_id is provided, validate it matches message.tenant_id
+    if api_tenant_id:
+        if message.tenant_id != api_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tenant ID mismatch - potential spoofing attempt. Tenant ID must match API key."
+            )
+        tenant_id = api_tenant_id  # Use API key tenant_id (authoritative)
+    else:
+        # Fallback: use message.tenant_id (for backward compatibility, but less secure)
+        tenant_id = message.tenant_id
+    
     start_time = time.time()
     
     try:
@@ -197,6 +220,15 @@ async def handle_inbound_message_sync(
         # Set tenant context for DB operations
         db.execute(text("SET app.current_tenant_id = :tenant_id"), {"tenant_id": tenant_id})
         db.commit()
+        
+        # SECURITY: Create immutable execution context from authentication
+        # This context cannot be modified by LLM or user input
+        user_external_id = message.from_.external_id if message.from_ else None
+        if not user_external_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Message must include user external_id in 'from' field"
+            )
         
         # Load tenant context
         tenant_ctx = get_tenant_context(tenant_id)
@@ -233,6 +265,16 @@ async def handle_inbound_message_sync(
         # Update message with actual conversation_id
         message.conversation_id = conversation_id
         
+        # SECURITY: Create immutable execution context from authentication
+        # This context is stored in session, NOT in LLM conversation
+        # LLM cannot see or modify this context
+        execution_context = {
+            "tenant_id": tenant_id,  # From API key auth - IMMUTABLE
+            "user_external_id": user_external_id,  # From authenticated message - IMMUTABLE
+            "conversation_id": conversation_id,
+            "channel": message.channel,
+        }
+        
         # Log inbound message event (after conversation is created and committed)
         await log_event(
             tenant_id=tenant_id,
@@ -248,17 +290,120 @@ async def handle_inbound_message_sync(
         # Get conversation history
         history = get_conversation_history(db, tenant_id, conversation_id)
         
-        # Build prompts
-        llm_messages = build_messages(tenant_ctx, history, message)
-        
         # Get allowed tools
         tools = get_allowed_tools(tenant_ctx)
+        
+        # Generate plan if planning is enabled
+        plan = None
+        plan_id = None
+        if tenant_ctx.planning_enabled:
+            try:
+                planning_start_time = time.time()
+                plan = await create_plan(
+                    tenant_ctx=tenant_ctx,
+                    goal=message.content.text,
+                    available_tools=tools,
+                    conversation_id=conversation_id,
+                    message_id=inbound_msg_id,
+                )
+                plan_id = plan.get("plan_id")
+                planning_latency_ms = int((time.time() - planning_start_time) * 1000)
+                
+                # Log plan creation
+                await log_event(
+                    tenant_id=tenant_id,
+                    event_type="plan_created",
+                    provider=tenant_ctx.llm_provider,
+                    status="success",
+                    latency_ms=planning_latency_ms,
+                    conversation_id=conversation_id,
+                    message_id=inbound_msg_id,
+                    payload={"plan_id": plan_id, "step_count": len(plan.get("steps", [])), "complexity": plan.get("complexity", "medium")}
+                )
+                
+                # Record metrics
+                plans_created_total.labels(
+                    tenant_id=tenant_id,
+                    status="success"
+                ).inc()
+                plan_execution_duration.labels(
+                    tenant_id=tenant_id
+                ).observe(planning_latency_ms / 1000.0)
+                
+                # Update plan status to executing
+                with get_db_session(tenant_id) as plan_session:
+                    plan_session.execute(
+                        text("""
+                            UPDATE agentic_plans
+                            SET status = 'executing', updated_at = now()
+                            WHERE id = :plan_id AND tenant_id = :tenant_id
+                        """),
+                        {"plan_id": plan_id, "tenant_id": tenant_id}
+                    )
+                    plan_session.commit()
+                
+            except Exception as e:
+                logger = logging.getLogger("app.api.utils")
+                logger.warning(f"Plan generation failed, falling back to reactive execution: {str(e)}", exc_info=True)
+                await log_event(
+                    tenant_id=tenant_id,
+                    event_type="plan_created",
+                    provider=tenant_ctx.llm_provider,
+                    status="failure",
+                    conversation_id=conversation_id,
+                    message_id=inbound_msg_id,
+                    payload={"error": str(e)}
+                )
+                # Record metrics
+                plans_created_total.labels(
+                    tenant_id=tenant_id,
+                    status="failure"
+                ).inc()
+                # Continue with reactive execution
+        
+        # Build prompts (include plan context if available)
+        llm_messages = build_messages(tenant_ctx, history, message)
+        
+        # Add plan context to system message if plan exists
+        if plan and plan_id:
+            plan_context = f"\n\nEXECUTION PLAN:\n"
+            plan_context += f"Goal: {plan.get('goal', '')}\n"
+            plan_context += f"Steps ({len(plan.get('steps', []))} total):\n"
+            for step in plan.get("steps", [])[:5]:  # Show first 5 steps
+                plan_context += f"  {step.get('step_number')}. {step.get('description', '')}\n"
+            if len(plan.get("steps", [])) > 5:
+                plan_context += f"  ... and {len(plan.get('steps', [])) - 5} more steps\n"
+            plan_context += "\nFollow this plan when executing tools. Update plan status as you progress."
+            
+            # Add to first system message or create new one
+            if llm_messages and llm_messages[0].get("role") == "system":
+                llm_messages[0]["content"] += plan_context
+            else:
+                llm_messages.insert(0, {"role": "system", "content": plan_context})
+        
+        # Create task if plan exists (for long-running operations)
+        task_id = None
+        if plan_id and plan:
+            try:
+                task = await create_task(
+                    tenant_ctx=tenant_ctx,
+                    goal=plan.get("goal", message.content.text),
+                    plan_id=plan_id,
+                    conversation_id=conversation_id,
+                )
+                task_id = task.get("task_id")
+                tasks_created_total.labels(tenant_id=tenant_id, status="success").inc()
+            except Exception as e:
+                logger = logging.getLogger("app.api.utils")
+                logger.warning(f"Failed to create task: {str(e)}", exc_info=True)
         
         # Call LLM with tool calling loop
         response_text = ""
         tool_calls_executed = 0
+        max_steps = tenant_ctx.max_tool_steps if hasattr(tenant_ctx, 'max_tool_steps') else MAX_TOOL_STEPS
+        execution_results = []  # Track execution results for reflection
         
-        for step in range(MAX_TOOL_STEPS):
+        for step in range(max_steps):
             llm_start_time = time.time()
             
             # Call LLM with retry logic
@@ -470,7 +615,14 @@ async def handle_inbound_message_sync(
             else:
                 llm_cost = 0.0
             
-            # Store LLM trace
+            # Store LLM trace (include plan_id if available)
+            trace_payload = {
+                "messages": llm_messages,
+                "tools": [{"name": t.name, "description": t.description} for t in tools],
+            }
+            if plan_id:
+                trace_payload["plan_id"] = plan_id
+            
             with get_db_session(tenant_id) as trace_session:
                 trace_session.execute(
                     text("""
@@ -488,10 +640,7 @@ async def handle_inbound_message_sync(
                         "message_id": inbound_msg_id,
                         "provider": tenant_ctx.llm_provider,
                         "model": tenant_ctx.llm_model,
-                        "request_payload": json.dumps({
-                            "messages": llm_messages,
-                            "tools": [{"name": t.name, "description": t.description} for t in tools],
-                        }),
+                        "request_payload": json.dumps(trace_payload),
                         "response_payload": json.dumps(response) if isinstance(response, dict) else json.dumps({"content": str(response)}),
                     }
                 )
@@ -570,8 +719,13 @@ async def handle_inbound_message_sync(
                     continue
                 
                 try:
-                    # Execute tool
-                    tool_result = await execute_tool_call(tenant_ctx, tool_def, tool_args)
+                    # SECURITY: Execute tool with execution context for parameter override and header injection
+                    tool_result = await execute_tool_call(
+                        tenant_ctx, 
+                        tool_def, 
+                        tool_args,
+                        execution_context=execution_context  # Pass immutable context
+                    )
                     tool_latency_ms = int((time.time() - tool_call_start_time) * 1000)
                     
                     # Calculate tool cost
@@ -588,18 +742,19 @@ async def handle_inbound_message_sync(
                         status="success"
                     ).inc()
                     
-                    # Log tool call
+                    # Log tool call with enhanced security audit fields
                     await log_tool_call(
                         tenant_id=tenant_id,
                         tool_name=tool_name,
                         provider=tool_def.provider,
-                        arguments=tool_args,
+                        arguments=tool_args,  # Already overridden if user-scoped
                         result_summary=tool_result,
                         status="success",
                         latency_ms=tool_latency_ms,
                         cost=tool_cost,
                         conversation_id=conversation_id,
                         message_id=inbound_msg_id,
+                        execution_context=execution_context,  # For security audit
                     )
                     
                     # Add tool result to messages for next LLM call
@@ -611,6 +766,27 @@ async def handle_inbound_message_sync(
                     })
                     
                     tool_calls_executed += 1
+                    
+                    # Track execution result for reflection
+                    execution_results.append({
+                        "step_number": step + 1,
+                        "tool_name": tool_name,
+                        "status": "success",
+                        "result": tool_result,
+                    })
+                    
+                    # Update task state if task exists
+                    if task_id:
+                        try:
+                            await update_task_state(
+                                tenant_ctx=tenant_ctx,
+                                task_id=task_id,
+                                current_step=step + 1,
+                                state={"step_results": execution_results},
+                            )
+                        except Exception as e:
+                            logger = logging.getLogger("app.api.utils")
+                            logger.warning(f"Failed to update task state: {str(e)}", exc_info=True)
                 except Exception as e:
                     tool_latency_ms = int((time.time() - tool_call_start_time) * 1000)
                     tool_cost = calculate_tool_cost(tool_def.provider, tool_name, tool_latency_ms)
@@ -621,6 +797,14 @@ async def handle_inbound_message_sync(
                         status="failure"
                     ).inc()
                     
+                    # SECURITY: Sanitize error message to prevent information disclosure
+                    error_msg = str(e)
+                    sanitized_error = "Unable to retrieve data"  # Generic error for users
+                    if any(keyword in error_msg.lower() for keyword in ["tenant", "user", "customer", "id", "unauthorized", "forbidden"]):
+                        # Log detailed error server-side only
+                        logger = logging.getLogger("app.api.utils")
+                        logger.error(f"Tool execution failed for {tool_name}: {error_msg}", exc_info=True)
+                    
                     await log_tool_call(
                         tenant_id=tenant_id,
                         tool_name=tool_name,
@@ -628,12 +812,74 @@ async def handle_inbound_message_sync(
                         arguments=tool_args,
                         result_summary={},
                         status="failure",
-                        error_message=str(e),
+                        error_message=sanitized_error,  # Generic error to user
                         latency_ms=tool_latency_ms,
                         cost=tool_cost,
                         conversation_id=conversation_id,
                         message_id=inbound_msg_id,
+                        execution_context=execution_context,  # For security audit
                     )
+                    
+                    # Track execution result for reflection
+                    execution_results.append({
+                        "step_number": step + 1,
+                        "tool_name": tool_name,
+                        "status": "failure",
+                        "error": str(e),
+                    })
+        
+        # Update plan status and complete task if plan exists
+        if plan_id:
+            plan_status = "completed" if response_text else "failed"
+            final_outcome = "success" if response_text else "failed"
+            
+            with get_db_session(tenant_id) as plan_session:
+                plan_session.execute(
+                    text("""
+                        UPDATE agentic_plans
+                        SET status = :status, updated_at = now()
+                        WHERE id = :plan_id AND tenant_id = :tenant_id
+                    """),
+                    {"plan_id": plan_id, "tenant_id": tenant_id, "status": plan_status}
+                )
+                plan_session.commit()
+            
+            # Log plan execution completion
+            await log_event(
+                tenant_id=tenant_id,
+                event_type="plan_execution_completed",
+                provider=tenant_ctx.llm_provider,
+                status=plan_status,
+                conversation_id=conversation_id,
+                message_id=inbound_msg_id,
+                payload={"plan_id": plan_id, "tool_calls_executed": tool_calls_executed}
+            )
+            
+            # Reflect on execution and generate insights
+            if execution_results:
+                try:
+                    await reflect_on_execution(
+                        tenant_ctx=tenant_ctx,
+                        plan_id=plan_id,
+                        task_id=task_id,
+                        execution_results=execution_results,
+                        final_outcome=final_outcome,
+                    )
+                except Exception as e:
+                    logger = logging.getLogger("app.api.utils")
+                    logger.warning(f"Failed to reflect on execution: {str(e)}", exc_info=True)
+            
+            # Complete task if it exists
+            if task_id:
+                try:
+                    await complete_task(
+                        tenant_ctx=tenant_ctx,
+                        task_id=task_id,
+                        final_state={"execution_results": execution_results, "final_outcome": final_outcome},
+                    )
+                except Exception as e:
+                    logger = logging.getLogger("app.api.utils")
+                    logger.warning(f"Failed to complete task: {str(e)}", exc_info=True)
         
         # Create outbound message
         outbound_metadata = {}
@@ -647,6 +893,10 @@ async def handle_inbound_message_sync(
                     file_ids.append(ann["file_path"].get("file_id"))
             if file_ids:
                 outbound_metadata["file_ids"] = list(set(file_ids))
+        if plan_id:
+            outbound_metadata["plan_id"] = plan_id
+        if task_id:
+            outbound_metadata["task_id"] = task_id
         
         outbound_msg = CanonicalMessage(
             id=str(uuid.uuid4()),

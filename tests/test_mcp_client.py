@@ -338,4 +338,75 @@ class TestMCPClient:
             call_args = mock_client.post.call_args
             request_data = call_args[1]["json"]
             assert request_data["params"]["name"] == "fallback_tool"
+    
+    @pytest.mark.asyncio
+    async def test_execute_with_execution_context_headers(self, mcp_client, tenant_ctx, tool_def):
+        """Test that execution context headers are injected in HTTP requests."""
+        execution_context = {
+            "tenant_id": "test-tenant-123",
+            "user_external_id": "user-123",
+            "conversation_id": "conv-123"
+        }
+        
+        mock_response = {
+            "jsonrpc": "2.0",
+            "id": "mcp_req",
+            "result": {"success": True}
+        }
+        
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response_obj = MagicMock()
+            mock_response_obj.json.return_value = mock_response
+            mock_response_obj.raise_for_status = MagicMock()
+            mock_client.post = AsyncMock(return_value=mock_response_obj)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+            
+            await mcp_client.execute(
+                tenant_ctx, tool_def, {"query": "test"}, execution_context=execution_context
+            )
+            
+            # Verify execution context headers were injected
+            call_args = mock_client.post.call_args
+            headers = call_args[1]["headers"]
+            
+            assert "X-Tenant-ID" in headers
+            assert headers["X-Tenant-ID"] == "test-tenant-123"
+            assert "X-User-External-ID" in headers
+            assert headers["X-User-External-ID"] == "user-123"
+            assert "X-Conversation-ID" in headers
+            assert headers["X-Conversation-ID"] == "conv-123"
+    
+    @pytest.mark.asyncio
+    async def test_execute_without_execution_context_no_headers(self, mcp_client, tenant_ctx, tool_def):
+        """Test that execution context headers are not injected if execution_context is None."""
+        mock_response = {
+            "jsonrpc": "2.0",
+            "id": "mcp_req",
+            "result": {"success": True}
+        }
+        
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response_obj = MagicMock()
+            mock_response_obj.json.return_value = mock_response
+            mock_response_obj.raise_for_status = MagicMock()
+            mock_client.post = AsyncMock(return_value=mock_response_obj)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client_class.return_value = mock_client
+            
+            await mcp_client.execute(
+                tenant_ctx, tool_def, {"query": "test"}, execution_context=None
+            )
+            
+            # Verify execution context headers are NOT present (unless legacy config enabled)
+            call_args = mock_client.post.call_args
+            headers = call_args[1]["headers"]
+            
+            # X-Tenant-ID might be present from legacy include_tenant_context config
+            # But X-User-External-ID should NOT be present
+            assert "X-User-External-ID" not in headers or headers.get("X-User-External-ID") == ""
 
