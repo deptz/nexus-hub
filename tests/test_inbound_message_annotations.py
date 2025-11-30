@@ -27,12 +27,24 @@ TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_eng
 
 @pytest.fixture
 def test_db():
-    """Create test database session."""
+    """Create test database session with cleanup."""
     session = TestSessionLocal()
     try:
         yield session
     finally:
-        session.close()
+        # Clean up test data after each test to ensure isolation
+        try:
+            session.execute(text("DELETE FROM event_logs"))
+            session.execute(text("DELETE FROM messages"))
+            session.execute(text("DELETE FROM conversations"))
+            session.execute(text("DELETE FROM api_keys"))
+            session.execute(text("DELETE FROM tenants"))
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            print(f"Warning: Cleanup failed: {e}")
+        finally:
+            session.close()
 
 
 @pytest.fixture
@@ -53,12 +65,13 @@ def client(test_db):
 def test_tenant(test_db):
     """Create a test tenant with OpenAI configuration."""
     tenant_id = str(uuid.uuid4())
+    slug = f"test-tenant-{tenant_id[:8]}"  # Unique slug per test
     test_db.execute(
         text("""
             INSERT INTO tenants (id, name, slug, llm_provider, llm_model)
-            VALUES (:id, 'Test Tenant', 'test-tenant', 'openai', 'gpt-4-turbo')
+            VALUES (:id, 'Test Tenant', :slug, 'openai', 'gpt-4-turbo')
         """),
-        {"id": tenant_id}
+        {"id": tenant_id, "slug": slug}
     )
     test_db.commit()
     return tenant_id
@@ -95,12 +108,32 @@ def test_kb_config(test_db, test_tenant):
     return kb_id
 
 
+@pytest.fixture
+def test_api_key(test_db, test_tenant):
+    """Create a test API key for the tenant."""
+    import bcrypt
+    import secrets
+    # Generate unique API key per test to avoid prefix collisions
+    api_key_plain = f"test-api-key-{secrets.token_urlsafe(16)}"
+    api_key_hash = bcrypt.hashpw(api_key_plain.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    key_prefix = api_key_plain[:8]  # First 8 chars as prefix
+    test_db.execute(
+        text("""
+            INSERT INTO api_keys (id, tenant_id, key_prefix, key_hash, name, is_active)
+            VALUES (gen_random_uuid(), :tenant_id, :key_prefix, :key_hash, 'test-key', TRUE)
+        """),
+        {"tenant_id": test_tenant, "key_prefix": key_prefix, "key_hash": api_key_hash}
+    )
+    test_db.commit()
+    return api_key_plain
+
+
 class TestInboundMessageAnnotations:
     """Test that annotations are preserved through the inbound message flow."""
     
     @patch("httpx.AsyncClient")
     def test_inbound_message_with_annotations(
-        self, mock_async_client, client, test_db, test_tenant, test_channel, test_kb_config
+        self, mock_async_client, client, test_db, test_tenant, test_channel, test_kb_config, test_api_key
     ):
         """Test that annotations from Responses API are preserved in message metadata."""
         # Mock Responses API response with annotations
@@ -173,7 +206,11 @@ class TestInboundMessageAnnotations:
         }
         
         # Send message (will use mocked Responses API)
-        response = client.post("/messages/inbound", json=message)
+        response = client.post(
+            "/messages/inbound",
+            json=message,
+            headers={"X-API-Key": test_api_key}
+        )
         
         # Should return 200 if API key is configured, 500 if not
         # But we're mocking the API call, so it should work
@@ -212,7 +249,7 @@ class TestInboundMessageAnnotations:
     
     @patch("httpx.AsyncClient")
     def test_inbound_message_without_annotations(
-        self, mock_async_client, client, test_db, test_tenant, test_channel
+        self, mock_async_client, client, test_db, test_tenant, test_channel, test_api_key
     ):
         """Test that messages without annotations are handled correctly."""
         # Mock Responses API response without annotations
@@ -262,7 +299,11 @@ class TestInboundMessageAnnotations:
         }
         
         # Send message
-        response = client.post("/messages/inbound", json=message)
+        response = client.post(
+            "/messages/inbound",
+            json=message,
+            headers={"X-API-Key": test_api_key}
+        )
         
         assert response.status_code in [200, 500]
         
@@ -289,7 +330,7 @@ class TestInboundMessageAnnotations:
     
     @patch("httpx.AsyncClient")
     def test_inbound_message_multiple_annotations(
-        self, mock_async_client, client, test_db, test_tenant, test_channel, test_kb_config
+        self, mock_async_client, client, test_db, test_tenant, test_channel, test_kb_config, test_api_key
     ):
         """Test that multiple annotations are preserved correctly."""
         # Mock Responses API response with multiple annotations
@@ -363,7 +404,11 @@ class TestInboundMessageAnnotations:
         }
         
         # Send message
-        response = client.post("/messages/inbound", json=message)
+        response = client.post(
+            "/messages/inbound",
+            json=message,
+            headers={"X-API-Key": test_api_key}
+        )
         
         assert response.status_code in [200, 500]
         

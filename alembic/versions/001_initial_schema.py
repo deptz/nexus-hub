@@ -39,3 +39,4 @@ def downgrade() -> None:
     op.execute("DROP SCHEMA IF EXISTS public CASCADE")
     op.execute("CREATE SCHEMA public")
 
+

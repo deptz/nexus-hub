@@ -288,3 +288,4 @@ CREATE INDEX rag_chunks_document_idx ON rag_chunks(document_id);
 -- USING ivfflat (embedding vector_cosine_ops)
 -- WITH (lists = 100);
 
+

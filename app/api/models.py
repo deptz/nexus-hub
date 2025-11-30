@@ -256,16 +256,22 @@ class MCPServerToolResponse(BaseModel):
     mcp_server_id: str
     tool_name: str
     description: Optional[str]
-    schema: Dict[str, Any]  # Note: 'schema' shadows BaseModel.schema, but needed for API
+    json_schema: Dict[str, Any] = Field(..., alias="schema", description="Tool schema (JSON Schema)")
     created_at: str
     updated_at: str
+    
+    class Config:
+        populate_by_name = True  # Allow both 'schema' and 'json_schema' in API
 
 
 class CreateMCPServerToolRequest(BaseModel):
     """Request model for creating/updating an MCP server tool."""
     tool_name: str = Field(..., description="Tool name as exposed by MCP server", example="get_customer")
     description: Optional[str] = Field(None, description="Tool description", example="Get customer information by ID")
-    schema: Dict[str, Any] = Field(default_factory=dict, description="Tool schema (JSON Schema)", example={"type": "object", "properties": {}})
+    json_schema: Dict[str, Any] = Field(default_factory=dict, alias="schema", description="Tool schema (JSON Schema)", example={"type": "object", "properties": {}})
+    
+    class Config:
+        populate_by_name = True  # Allow both 'schema' and 'json_schema' in API
 
 
 # ============================================================================

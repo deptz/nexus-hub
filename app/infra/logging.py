@@ -36,3 +36,4 @@ def setup_logging():
 # Initialize logging
 app_logger = setup_logging()
 
+

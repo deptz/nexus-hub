@@ -67,3 +67,4 @@ class TestTenantContextService:
         assert isinstance(ctx.prompt_profile, dict)
         assert ctx.isolation_mode == "shared_db"
 
+

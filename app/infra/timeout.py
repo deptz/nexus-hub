@@ -41,3 +41,4 @@ LLM_CALL_TIMEOUT = 120  # 2 minutes for LLM calls
 TOOL_EXECUTION_TIMEOUT = 30  # 30 seconds for tool execution
 DATABASE_QUERY_TIMEOUT = 10  # 10 seconds for DB queries
 
+

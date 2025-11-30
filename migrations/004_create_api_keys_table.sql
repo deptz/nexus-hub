@@ -35,3 +35,4 @@ USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 -- The key_hash is stored using bcrypt (handled in Python code)
 -- PostgreSQL's crypt() function can be used for verification, but we'll use Python's bcrypt
 
+

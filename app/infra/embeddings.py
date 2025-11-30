@@ -114,3 +114,4 @@ class EmbeddingGenerator:
 # Global instance
 embedding_generator = EmbeddingGenerator()
 
+

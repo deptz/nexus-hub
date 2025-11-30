@@ -35,3 +35,4 @@ def downgrade() -> None:
     op.execute("DROP POLICY IF EXISTS api_keys_tenant_isolation ON api_keys")
     op.execute("DROP TABLE IF EXISTS api_keys CASCADE")
 
+
